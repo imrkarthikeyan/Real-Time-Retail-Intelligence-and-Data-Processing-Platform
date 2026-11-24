@@ -1,0 +1,128 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-retail_db}
+      POSTGRES_USER: ${POSTGRES_USER:-retail}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-retail_password}
+    ports: ["${POSTGRES_PORT:-5432}:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  kafka:
+    image: bitnami/kafka:3.8
+    ports: ["${KAFKA_PORT:-9092}:9092"]
+    environment:
+      KAFKA_CFG_NODE_ID: 1
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://localhost:${KAFKA_PORT:-9092}
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "false"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    volumes: [kafka-data:/bitnami/kafka]
+
+  kafka-connect:
+    image: debezium/connect:2.7
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_started}
+    ports: ["8083:8083"]
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: connect_configs
+      OFFSET_STORAGE_TOPIC: connect_offsets
+      STATUS_STORAGE_TOPIC: connect_statuses
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mkdir -p /config
+        cat > /config/s3.json <<EOF
+        {
+          "identities": [
+            {
+              "name": "${SEAWEED_ACCESS_KEY:-retailpulse}",
+              "credentials": [
+                {
+                  "accessKey": "${SEAWEED_ACCESS_KEY:-retailpulse}",
+                  "secretKey": "${SEAWEED_SECRET_KEY:-retailpulse_secret}"
+                }
+              ],
+              "actions": ["Admin", "Read", "Write", "List"]
+            }
+          ]
+        }
+        EOF
+        exec weed server -dir=/data -s3 -s3.port=8333 -s3.config=/config/s3.json
+    ports:
+      - "${SEAWEED_S3_PORT:-8333}:8333"
+    environment:
+      SEAWEED_ACCESS_KEY: ${SEAWEED_ACCESS_KEY:-retailpulse}
+      SEAWEED_SECRET_KEY: ${SEAWEED_SECRET_KEY:-retailpulse_secret}
+    volumes:
+      - seaweedfs-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9333/cluster/status >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  seaweedfs-init:
+    image: python:3.12-slim
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    environment:
+      SEAWEED_S3_ENDPOINT: http://seaweedfs:8333
+      SEAWEED_ACCESS_KEY: ${SEAWEED_ACCESS_KEY:-retailpulse}
+      SEAWEED_SECRET_KEY: ${SEAWEED_SECRET_KEY:-retailpulse_secret}
+      SEAWEED_BUCKET: ${SEAWEED_BUCKET:-retailpulse}
+    command:
+      - sh
+      - -c
+      - |
+        pip install --no-cache-dir boto3 &&
+        python - <<'PY'
+        import os
+        import boto3
+        from botocore.config import Config
+
+        client = boto3.client(
+            "s3",
+            endpoint_url=os.environ["SEAWEED_S3_ENDPOINT"],
+            aws_access_key_id=os.environ["SEAWEED_ACCESS_KEY"],
+            aws_secret_access_key=os.environ["SEAWEED_SECRET_KEY"],
+            region_name="us-east-1",
+            config=Config(s3={"addressing_style": "path"}),
+        )
+        bucket = os.environ["SEAWEED_BUCKET"]
+        names = {b["Name"] for b in client.list_buckets().get("Buckets", [])}
+        if bucket not in names:
+            client.create_bucket(Bucket=bucket)
+        print(f"SeaweedFS bucket ready: {bucket}")
+        PY
+    restart: "no"
+
+volumes:
+  postgres-data:
+  kafka-data:
+  seaweedfs-data:
+

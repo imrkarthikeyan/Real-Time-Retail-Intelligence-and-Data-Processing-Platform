@@ -1,0 +1,21 @@
+{
+  "name": "retailpulse-postgres-source",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "retail",
+    "database.password": "retail_password",
+    "database.dbname": "retail_db",
+    "topic.prefix": "retail",
+    "plugin.name": "pgoutput",
+    "publication.name": "retailpulse_publication",
+    "slot.name": "retailpulse_slot",
+    "table.include.list": "public.customers,public.products,public.orders,public.order_items,public.payments,public.inventory",
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter.schemas.enable": "false",
+    "snapshot.mode": "initial"
+  }
+}

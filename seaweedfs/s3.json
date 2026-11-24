@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "retailpulse",
+      "credentials": [
+        {
+          "accessKey": "retailpulse",
+          "secretKey": "retailpulse_secret"
+        }
+      ],
+      "actions": ["Admin", "Read", "Write", "List"]
+    }
+  ]
+}
